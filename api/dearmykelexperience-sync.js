@@ -7,56 +7,66 @@ export default async function handler(req, res) {
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
     const { email, archetype, first_name, last_name, phone } = body || {};
 
-    // 🔒 SAFEGUARD: fill blank archetype so webhook never fails again
     const finalArchetype = archetype && archetype.trim() ? archetype : "Unknown";
+    if (!email) return res.status(400).json({ error: "Missing email" });
 
-    if (!email) {
-      return res.status(400).json({ error: "Missing email" });
-    }
-
-    const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
+    const SHOPIFY_STORE = process.env.SHOPIFY_STORE; // must be full .myshopify.com
     const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN;
     const META_NAMESPACE = process.env.META_NAMESPACE || "dearmykelexperience";
     const META_KEY = process.env.META_KEY || "archetype";
 
-    // --- Step 1: Find or create customer ---
+    // -------- Find customer by email ----------
     const searchUrl = `https://${SHOPIFY_STORE}/admin/api/2024-10/customers/search.json?query=email:${encodeURIComponent(email)}`;
-    let findRes = await fetch(searchUrl, {
+    const findRes = await fetch(searchUrl, {
       headers: {
         "X-Shopify-Access-Token": ADMIN_API_TOKEN,
         "Content-Type": "application/json",
       },
     });
-    const findData = await findRes.json();
 
+    if (!findRes.ok) {
+      const txt = await findRes.text();
+      console.error("Shopify search failed:", txt);
+      return res.status(500).json({ error: "Shopify search failed", details: txt });
+    }
+
+    const findData = await findRes.json();
     let customerId;
+
     if (findData?.customers?.length) {
       customerId = findData.customers[0].id;
     } else {
+      // -------- Create customer if not found ----------
       const createUrl = `https://${SHOPIFY_STORE}/admin/api/2024-10/customers.json`;
-      const createBody = {
-        customer: {
-          email,
-          first_name,
-          last_name,
-          phone,
-          verified_email: true,
-          accepts_marketing: true,
-        },
-      };
       const createRes = await fetch(createUrl, {
         method: "POST",
         headers: {
           "X-Shopify-Access-Token": ADMIN_API_TOKEN,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(createBody),
+        body: JSON.stringify({
+          customer: {
+            email,
+            first_name,
+            last_name,
+            phone,
+            verified_email: true,
+            accepts_marketing: true,
+          },
+        }),
       });
-      const createData = await createRes.json();
+
+      const createText = await createRes.text();
+      if (!createRes.ok) {
+        console.error("Shopify create failed:", createText);
+        return res.status(500).json({ error: "Shopify create failed", details: createText });
+      }
+
+      const createData = JSON.parse(createText);
       customerId = createData.customer?.id;
     }
 
-    // --- Step 2: Update metafield via GraphQL ---
+    // -------- Set metafield via GraphQL ----------
     const gqlUrl = `https://${SHOPIFY_STORE}/admin/api/2024-10/graphql.json`;
     const gqlBody = {
       query: `
@@ -89,10 +99,16 @@ export default async function handler(req, res) {
       body: JSON.stringify(gqlBody),
     });
 
-    const updateData = await updateRes.json();
-    const errs = updateData.data?.metafieldsSet?.userErrors;
+    const updateText = await updateRes.text();
+    if (!updateRes.ok) {
+      console.error("GraphQL error:", updateText);
+      return res.status(500).json({ error: "GraphQL failed", details: updateText });
+    }
 
+    const updateData = JSON.parse(updateText);
+    const errs = updateData.data?.metafieldsSet?.userErrors;
     if (errs?.length) {
+      console.error("Metafield userErrors:", errs);
       return res.status(400).json({ error: "Shopify metafield error", details: errs });
     }
 
@@ -102,7 +118,7 @@ export default async function handler(req, res) {
       metafield: updateData.data.metafieldsSet.metafields[0],
     });
   } catch (err) {
-    console.error("❌ Fatal error:", err);
-    return res.status(500).json({ error: "Server crash", details: err.message });
+    console.error("❌ Fatal server error:", err);
+    return res.status(500).json({ error: "Server crashed", details: err.message });
   }
 }
