@@ -11,7 +11,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing email or archetype" });
     }
 
-    const SHOPIFY_STORE = process.env.SHOPIFY_STORE?.trim().replace(/^https?:\/\//, "");
+    // ✅ Clean environment setup
+    let SHOPIFY_STORE = process.env.SHOPIFY_STORE?.trim();
+    if (!SHOPIFY_STORE.startsWith("https://")) {
+      SHOPIFY_STORE = `https://${SHOPIFY_STORE}`;
+    }
+
     const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN?.trim();
 
     if (!SHOPIFY_STORE || !ADMIN_API_TOKEN) {
@@ -19,7 +24,7 @@ export default async function handler(req, res) {
     }
 
     // Step 1: Find customer by email
-    const searchUrl = `https://${SHOPIFY_STORE}/admin/api/2025-10/customers/search.json?query=email:${encodeURIComponent(email)}`;
+    const searchUrl = `${SHOPIFY_STORE}/admin/api/2025-10/customers/search.json?query=email:${encodeURIComponent(email)}`;
     const searchRes = await fetch(searchUrl, {
       headers: {
         "X-Shopify-Access-Token": ADMIN_API_TOKEN,
@@ -33,14 +38,14 @@ export default async function handler(req, res) {
     }
 
     const searchData = JSON.parse(searchText);
-    if (!searchData.customers?.length) {
+    if (!searchData.customers.length) {
       return res.status(404).json({ error: `Customer not found: ${email}` });
     }
 
     const customerId = searchData.customers[0].id;
-    const graphUrl = `https://${SHOPIFY_STORE}/admin/api/2025-10/graphql.json`;
 
-    // Step 2: Build GraphQL mutation
+    // Step 2: GraphQL mutation
+    const graphUrl = `${SHOPIFY_STORE}/admin/api/2025-10/graphql.json`;
     const gqlMutation = {
       query: `
         mutation {
@@ -51,23 +56,13 @@ export default async function handler(req, res) {
             type: "single_line_text_field",
             value: "${archetype}"
           }]) {
-            metafields {
-              id
-              namespace
-              key
-              value
-              type
-            }
-            userErrors {
-              field
-              message
-            }
+            metafields { id namespace key value type }
+            userErrors { field message }
           }
         }
       `,
     };
 
-    // Step 3: Send GraphQL mutation to Shopify
     const graphRes = await fetch(graphUrl, {
       method: "POST",
       headers: {
@@ -82,20 +77,10 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Shopify GraphQL failed", detail: graphText });
     }
 
-    const graphData = JSON.parse(graphText);
-    const userErrors = graphData?.data?.metafieldsSet?.userErrors;
-    if (userErrors && userErrors.length > 0) {
-      return res.status(500).json({ error: "Shopify metafield error", detail: userErrors });
-    }
+    return res.status(200).json({ success: true, data: JSON.parse(graphText) });
 
-    return res.status(200).json({
-      ok: true,
-      email,
-      archetype,
-      metafield: graphData.data.metafieldsSet.metafields[0],
-    });
   } catch (err) {
-    console.error("Fatal Server Error:", err);
-    return res.status(500).json({ error: "Internal Server Error", detail: err.message });
+    console.error("Sync error:", err);
+    return res.status(500).json({ error: err.message || "Unknown error" });
   }
 }
