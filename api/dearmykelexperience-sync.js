@@ -3,6 +3,7 @@
  * Backend API for syncing archetypes to Shopify customer metafields
  * Works with Shopify App Proxy and Vercel Deployment
  */
+ // redeploy after restoring package.json
 
 import express from "express";
 import fetch from "node-fetch";
